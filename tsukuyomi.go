@@ -1,128 +1,132 @@
+// Package tsukuyomi is a state machine for status fields of domain entities (orders, payments, requests, ...).
+//
+// The machine describes which transitions are allowed; a Store applies them atomically,
+// so two concurrent transitions of the same entity cannot both succeed.
 package tsukuyomi
 
 import (
 	"context"
-	"sync"
+	"errors"
+	"fmt"
+	"strings"
 )
 
-type Tsukuyomi[ID, K, T comparable] struct {
-	storage     Storage[ID, K, T]
-	ruleManager *RuleManager[K]
+var (
+	// ErrNotFound is returned by a Store when the entity does not exist.
+	ErrNotFound = errors.New("tsukuyomi: entity not found")
+	// ErrInvalidTransition means the machine has no transition from the current state to the target one.
+	ErrInvalidTransition = errors.New("tsukuyomi: invalid transition")
+	// ErrConflict means the state was changed concurrently between the read and the write.
+	ErrConflict = errors.New("tsukuyomi: state changed concurrently")
+)
 
-	states map[K]State[K, T]
-	lock   sync.RWMutex
+// Store keeps the current state of entities.
+type Store[ID, S comparable] interface {
+	State(ctx context.Context, id ID) (S, error)
+	// CompareAndSwap sets the state to `to` only if it currently equals `from` and reports whether it did.
+	CompareAndSwap(ctx context.Context, id ID, from, to S) (bool, error)
 }
 
-func new[ID, K, T comparable](storage Storage[ID, K, T]) *Tsukuyomi[ID, K, T] {
-	return &Tsukuyomi[ID, K, T]{
-		storage:     storage,
-		ruleManager: NewRuleManager[K](),
-		states:      make(map[K]State[K, T]),
-		lock:        sync.RWMutex{},
+// Transition describes a single state change of an entity.
+type Transition[ID, S comparable] struct {
+	ID       ID
+	From, To S
+}
+
+// Guard can veto a transition by returning an error.
+type Guard[ID, S comparable] func(ctx context.Context, t Transition[ID, S]) error
+
+// Hook runs after a transition has been committed.
+type Hook[ID, S comparable] func(ctx context.Context, t Transition[ID, S])
+
+type edge[S comparable] struct{ from, to S }
+
+// Machine holds the transition graph. Configure it at startup; after that it is safe for concurrent use.
+type Machine[ID, S comparable] struct {
+	edges   map[edge[S]][]Guard[ID, S]
+	order   []edge[S]
+	onEnter map[S][]Hook[ID, S]
+}
+
+func New[ID, S comparable]() *Machine[ID, S] {
+	return &Machine[ID, S]{
+		edges:   make(map[edge[S]][]Guard[ID, S]),
+		onEnter: make(map[S][]Hook[ID, S]),
 	}
 }
 
-func (t *Tsukuyomi[ID, K, T]) RegisterState(state State[K, T]) error {
-	t.lock.Lock()
-	defer t.lock.Unlock()
-
-	t.states[state.Key] = state
-
-	return nil
+// Allow permits transitions from `from` to each of `to`.
+func (m *Machine[ID, S]) Allow(from S, to ...S) *Machine[ID, S] {
+	for _, t := range to {
+		e := edge[S]{from, t}
+		if _, ok := m.edges[e]; !ok {
+			m.edges[e] = nil
+			m.order = append(m.order, e)
+		}
+	}
+	return m
 }
 
-func (t *Tsukuyomi[ID, K, T]) HasState(key K) bool {
-	t.lock.RLock()
-	defer t.lock.RUnlock()
+// Guard adds a check to an allowed transition. It panics if the transition was not allowed: that is a setup bug.
+func (m *Machine[ID, S]) Guard(from, to S, g Guard[ID, S]) *Machine[ID, S] {
+	e := edge[S]{from, to}
+	if _, ok := m.edges[e]; !ok {
+		panic(fmt.Sprintf("tsukuyomi: guard on transition %v -> %v that is not allowed", from, to))
+	}
+	m.edges[e] = append(m.edges[e], g)
+	return m
+}
 
-	_, ok := t.states[key]
+// OnEnter adds a hook that runs after an entity enters state s.
+func (m *Machine[ID, S]) OnEnter(s S, h Hook[ID, S]) *Machine[ID, S] {
+	m.onEnter[s] = append(m.onEnter[s], h)
+	return m
+}
+
+func (m *Machine[ID, S]) Can(from, to S) bool {
+	_, ok := m.edges[edge[S]{from, to}]
 	return ok
 }
 
-func (t *Tsukuyomi[ID, K, T]) BanState(ctx context.Context, key K) error {
-	t.lock.Lock()
-	defer t.lock.Unlock()
+// Transition moves the entity to state `to`, checking the graph and guards, and runs OnEnter hooks on success.
+func (m *Machine[ID, S]) Transition(ctx context.Context, store Store[ID, S], id ID, to S) error {
+	from, err := store.State(ctx, id)
+	if err != nil {
+		return err
+	}
 
-	_, ok := t.states[key]
+	guards, ok := m.edges[edge[S]{from, to}]
 	if !ok {
-		return ErrStateNotFound
+		return fmt.Errorf("%w: %v -> %v", ErrInvalidTransition, from, to)
 	}
 
-	t.ruleManager.RemoveKey(key)
-
-	delete(t.states, key)
-
-	return nil
-}
-
-func (t *Tsukuyomi[ID, K, T]) GetState(ctx context.Context, id ID) (State[K, T], error) {
-	return t.storage.GetState(ctx, id)
-}
-
-func (t *Tsukuyomi[ID, K, T]) SaveState(ctx context.Context, id ID, state State[K, T]) error {
-	return t.storage.SaveState(ctx, id, state)
-}
-
-func (t *Tsukuyomi[ID, K, T]) DeleteState(ctx context.Context, id ID) error {
-	return t.storage.DeleteState(ctx, id)
-}
-
-// EnableTransitionByKeys включает разрешенный переход между ключами состояний
-func (t *Tsukuyomi[ID, K, T]) EnableTransition(from, to K) error {
-	if !t.isRegisteredKeys(from, to) {
-		return ErrStateNotFound
-	}
-
-	t.ruleManager.EnableTransition(from, to)
-
-	return nil
-}
-
-func (t *Tsukuyomi[ID, K, T]) isRegisteredKeys(keys ...K) bool {
-	t.lock.RLock()
-	defer t.lock.RUnlock()
-
-	for _, key := range keys {
-		if _, ok := t.states[key]; !ok {
-			return false
+	t := Transition[ID, S]{ID: id, From: from, To: to}
+	for _, g := range guards {
+		if err := g(ctx, t); err != nil {
+			return err
 		}
 	}
-	return true
-}
 
-func (t *Tsukuyomi[ID, K, T]) DisableTransition(from, to K) error {
-	if !t.isRegisteredKeys(from, to) {
-		return ErrStateNotFound
-	}
-
-	t.ruleManager.DisableTransition(from, to)
-
-	return nil
-}
-
-func (t *Tsukuyomi[ID, K, T]) ProcessTransition(ctx context.Context, id ID, to K) error {
-	state, err := t.GetState(ctx, id)
+	swapped, err := store.CompareAndSwap(ctx, id, from, to)
 	if err != nil {
 		return err
 	}
-
-	t.lock.RLock()
-
-	newState, ok := t.states[to]
-	if !ok {
-		return ErrStateNotFound
+	if !swapped {
+		return fmt.Errorf("%w: expected %v", ErrConflict, from)
 	}
 
-	t.lock.RUnlock()
-
-	if !t.ruleManager.CanTransition(state.Key, to) {
-		return ErrInvalidTransition
+	for _, h := range m.onEnter[to] {
+		h(ctx, t)
 	}
-
-	err = t.storage.SaveState(ctx, id, newState)
-	if err != nil {
-		return err
-	}
-
 	return nil
+}
+
+// Mermaid renders the transition graph as a Mermaid state diagram.
+func (m *Machine[ID, S]) Mermaid() string {
+	var b strings.Builder
+	b.WriteString("stateDiagram-v2\n")
+	for _, e := range m.order {
+		fmt.Fprintf(&b, "    %v --> %v\n", e.from, e.to)
+	}
+	return b.String()
 }
