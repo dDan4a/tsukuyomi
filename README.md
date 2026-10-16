@@ -1,18 +1,30 @@
-# tsukuyomi
+<div align="center">
+
+<h1>tsukuyomi</h1>
 
 Status transitions for any domain entity, done safely.
+
+[![Go version](https://img.shields.io/github/go-mod/go-version/dDan4a/tsukuyomi)](go.mod)
+[![License: MIT](https://img.shields.io/github/license/dDan4a/tsukuyomi)](LICENSE)
+
+</div>
 
 Orders, payments, applications, moderation tickets: every backend has entities with a `status` column and rules about
 which status can follow which. People usually spread those rules across services and write the
 `UPDATE ... WHERE status IN (...)` by hand. tsukuyomi keeps the rules in one graph and applies each transition atomically.
 If two requests race on the same entity, only one wins and the other gets `ErrConflict`.
 
-- One graph per entity type. The state is any `comparable` type: a string enum, an int, a custom type.
-- Atomic compare-and-swap in storage, with no locks in the machine.
-- Guards to veto a transition, and hooks that run after a transition commits.
-- A Postgres store that works with any table and runs inside your own transaction.
-- Exports the graph as a Mermaid diagram for your docs.
-- The core has zero dependencies.
+```mermaid
+stateDiagram-v2
+    new --> paid
+    new --> cancelled
+    paid --> shipped
+    paid --> refunded
+```
+
+<sub>The order graph from the example below, drawn by its own `orders.Mermaid()`.</sub>
+
+## Install
 
 ```
 go get github.com/dDan4a/tsukuyomi
@@ -52,13 +64,23 @@ func Ship(ctx context.Context, db *pgxpool.Pool, id int64) error {
 | `ErrNotFound` | The entity does not exist |
 | an error from your guard | A guard vetoed the transition |
 
+## Features
+
+- One graph per entity type. The state is any `comparable` type: a string enum, an int, a custom type.
+- Atomic compare-and-swap in storage, with no locks in the machine.
+- Guards to veto a transition, and hooks that run after a transition commits.
+- A Postgres store that works with any table and runs inside your own transaction.
+- Exports the graph as a Mermaid diagram for your docs (`orders.Mermaid()`, as above).
+- The core has zero dependencies.
+
 ## Transactions
 
 `pgstore.New` accepts `*pgxpool.Pool`, `*pgx.Conn` or `pgx.Tx`. If you pass a transaction, the status change commits
 together with your other writes: an outbox row, an audit log entry, a balance update.
 
-Hooks run after the store's write. Inside a transaction that means *before your commit*. Use hooks for things that are
-safe to repeat or to roll back, and use an outbox for side effects that must happen exactly once.
+> [!IMPORTANT]
+> Hooks run after the store's write. Inside a transaction that means *before your commit*. Use hooks for things that are
+> safe to repeat or to roll back, and use an outbox for side effects that must happen exactly once.
 
 ## Other storages
 
@@ -72,15 +94,3 @@ type Store[ID, S comparable] interface {
 ```
 
 `tsukuyomi.NewMemoryStore` is provided for tests.
-
-## Diagram
-
-`orders.Mermaid()` renders:
-
-```mermaid
-stateDiagram-v2
-    new --> paid
-    new --> cancelled
-    paid --> shipped
-    paid --> refunded
-```
