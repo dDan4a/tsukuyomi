@@ -32,5 +32,5 @@ jobs:
       - uses: golangci/golangci-lint-action@v8
         with:
           version: v2.13.2
-      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+      - run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
       - run: go mod tidy && git diff --exit-code go.mod go.sum
