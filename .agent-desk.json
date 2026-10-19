@@ -1,0 +1,14 @@
+{
+  "factory": "backend",
+  "gates": [
+    {"name": "build", "run": "go build ./..."},
+    {"name": "vet", "run": "go vet ./..."},
+    {"name": "test", "run": "go test -race -count=1 ./..."},
+    {"name": "lint", "run": "golangci-lint run"},
+    {"name": "vuln", "run": "go run golang.org/x/vuln/cmd/govulncheck@latest ./..."},
+    {"name": "tidy", "run": "go mod tidy && git diff --exit-code go.mod go.sum"}
+  ],
+  "protected": [".agent-desk.json", ".github/", ".golangci.yml"],
+  "guard": ["^func Test", "t\\.Run\\("],
+  "guard_added": ["t\\.Skip\\(", "//nolint"]
+}
