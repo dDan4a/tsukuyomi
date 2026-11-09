@@ -38,7 +38,8 @@ go test -race -count=1 ./...
 TSUKUYOMI_PG_DSN='postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable' go test ./pgstore
 ```
 
-CI (`.github/workflows/test.yml`) runs the same gates with a Postgres service, so `pgstore` tests run there.
+CI (`.github/workflows/ci.yml`) calls the shared workflows of [dDan4a/ci](https://github.com/dDan4a/ci) with a Postgres service, so `pgstore`
+tests run there. `.golangci.yml` and `.github/zizmor.yml` are byte-for-byte copies of its reference configs.
 
 ## Factory
 

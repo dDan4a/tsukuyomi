@@ -1,0 +1,29 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    uses: dDan4a/ci/.github/workflows/go-lint.yml@v1
+  test:
+    uses: dDan4a/ci/.github/workflows/go-test-postgres.yml@v1
+    with:
+      dsn-env: TSUKUYOMI_PG_DSN
+  vulncheck:
+    uses: dDan4a/ci/.github/workflows/go-vulncheck.yml@v1
+  tidy:
+    uses: dDan4a/ci/.github/workflows/go-mod-tidy.yml@v1
+  actionlint:
+    uses: dDan4a/ci/.github/workflows/actionlint.yml@v1
+  zizmor:
+    uses: dDan4a/ci/.github/workflows/zizmor.yml@v1
+  gitleaks:
+    uses: dDan4a/ci/.github/workflows/gitleaks.yml@v1
+  typos:
+    uses: dDan4a/ci/.github/workflows/typos.yml@v1
