@@ -64,6 +64,7 @@ func (m *Machine[ID, S]) Allow(from S, to ...S) *Machine[ID, S] {
 			m.order = append(m.order, e)
 		}
 	}
+
 	return m
 }
 
@@ -73,7 +74,9 @@ func (m *Machine[ID, S]) Guard(from, to S, g Guard[ID, S]) *Machine[ID, S] {
 	if _, ok := m.edges[e]; !ok {
 		panic(fmt.Sprintf("tsukuyomi: guard on transition %v -> %v that is not allowed", from, to))
 	}
+
 	m.edges[e] = append(m.edges[e], g)
+
 	return m
 }
 
@@ -111,6 +114,7 @@ func (m *Machine[ID, S]) Transition(ctx context.Context, store Store[ID, S], id 
 	if err != nil {
 		return err
 	}
+
 	if !swapped {
 		return fmt.Errorf("%w: expected %v", ErrConflict, from)
 	}
@@ -118,6 +122,7 @@ func (m *Machine[ID, S]) Transition(ctx context.Context, store Store[ID, S], id 
 	for _, h := range m.onEnter[to] {
 		h(ctx, t)
 	}
+
 	return nil
 }
 
@@ -125,8 +130,10 @@ func (m *Machine[ID, S]) Transition(ctx context.Context, store Store[ID, S], id 
 func (m *Machine[ID, S]) Mermaid() string {
 	var b strings.Builder
 	b.WriteString("stateDiagram-v2\n")
+
 	for _, e := range m.order {
 		fmt.Fprintf(&b, "    %v --> %v\n", e.from, e.to)
 	}
+
 	return b.String()
 }
