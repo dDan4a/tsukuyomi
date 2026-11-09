@@ -29,17 +29,21 @@ func TestTransition(t *testing.T) {
 	ctx := context.Background()
 	store := tsukuyomi.NewMemoryStore[int, status]()
 	store.Set(1, newOrder)
+
 	m := orders()
 
 	if err := m.Transition(ctx, store, 1, paid); err != nil {
 		t.Fatal(err)
 	}
+
 	if err := m.Transition(ctx, store, 1, cancelled); !errors.Is(err, tsukuyomi.ErrInvalidTransition) {
 		t.Fatalf("paid -> cancelled: got %v, want ErrInvalidTransition", err)
 	}
+
 	if err := m.Transition(ctx, store, 2, paid); !errors.Is(err, tsukuyomi.ErrNotFound) {
 		t.Fatalf("unknown id: got %v, want ErrNotFound", err)
 	}
+
 	if got, _ := store.State(ctx, 1); got != paid {
 		t.Fatalf("state = %v, want paid", got)
 	}
@@ -51,12 +55,15 @@ func TestGuardAndHook(t *testing.T) {
 	store.Set(1, newOrder)
 
 	errUnpaid := errors.New("unpaid")
+
 	var entered []tsukuyomi.Transition[int, status]
+
 	m := orders().
 		Guard(newOrder, paid, func(_ context.Context, tr tsukuyomi.Transition[int, status]) error {
 			if tr.ID == 1 {
 				return errUnpaid
 			}
+
 			return nil
 		}).
 		OnEnter(cancelled, func(_ context.Context, tr tsukuyomi.Transition[int, status]) { entered = append(entered, tr) })
@@ -64,9 +71,11 @@ func TestGuardAndHook(t *testing.T) {
 	if err := m.Transition(ctx, store, 1, paid); !errors.Is(err, errUnpaid) {
 		t.Fatalf("guard: got %v, want errUnpaid", err)
 	}
+
 	if err := m.Transition(ctx, store, 1, cancelled); err != nil {
 		t.Fatal(err)
 	}
+
 	want := tsukuyomi.Transition[int, status]{ID: 1, From: newOrder, To: cancelled}
 	if len(entered) != 1 || entered[0] != want {
 		t.Fatalf("hook calls = %v, want [%v]", entered, want)
@@ -79,6 +88,7 @@ func TestGuardOnUnknownTransitionPanics(t *testing.T) {
 			t.Fatal("expected panic")
 		}
 	}()
+
 	orders().Guard(shipped, newOrder, func(context.Context, tsukuyomi.Transition[int, status]) error { return nil })
 }
 
@@ -87,15 +97,20 @@ func TestConcurrentTransitions(t *testing.T) {
 	ctx := context.Background()
 	store := tsukuyomi.NewMemoryStore[int, status]()
 	store.Set(1, newOrder)
+
 	m := orders()
 
-	var wins atomic.Int32
-	var wg sync.WaitGroup
+	var (
+		wins atomic.Int32
+		wg   sync.WaitGroup
+	)
+
 	for i := range 100 {
 		target := paid
 		if i%2 == 0 {
 			target = cancelled
 		}
+
 		wg.Go(func() {
 			err := m.Transition(ctx, store, 1, target)
 			switch {
@@ -107,6 +122,7 @@ func TestConcurrentTransitions(t *testing.T) {
 			}
 		})
 	}
+
 	wg.Wait()
 
 	if wins.Load() != 1 {
@@ -118,5 +134,86 @@ func TestMermaid(t *testing.T) {
 	want := "stateDiagram-v2\n    new --> paid\n    new --> cancelled\n    paid --> shipped\n"
 	if got := orders().Mermaid(); got != want {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+func TestCan(t *testing.T) {
+	m := orders()
+
+	if !m.Can(newOrder, paid) {
+		t.Error("Can(new, paid) = false, want true")
+	}
+
+	if m.Can(paid, newOrder) {
+		t.Error("Can(paid, new) = true, want false")
+	}
+}
+
+func TestAllowTwiceKeepsOneEdge(t *testing.T) {
+	want := "stateDiagram-v2\n    new --> paid\n    new --> cancelled\n    paid --> shipped\n"
+	if got := orders().Allow(newOrder, paid).Mermaid(); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The guard changes the state behind the machine's back, so the compare-and-swap must fail.
+func TestConflictSkipsHooks(t *testing.T) {
+	ctx := context.Background()
+	store := tsukuyomi.NewMemoryStore[int, status]()
+	store.Set(1, newOrder)
+
+	hooked := false
+	m := orders().
+		Guard(newOrder, cancelled, func(context.Context, tsukuyomi.Transition[int, status]) error {
+			store.Set(1, paid)
+			return nil
+		}).
+		OnEnter(cancelled, func(context.Context, tsukuyomi.Transition[int, status]) { hooked = true })
+
+	if err := m.Transition(ctx, store, 1, cancelled); !errors.Is(err, tsukuyomi.ErrConflict) {
+		t.Fatalf("got %v, want ErrConflict", err)
+	}
+
+	if hooked {
+		t.Fatal("OnEnter ran after a failed transition")
+	}
+
+	if got, _ := store.State(ctx, 1); got != paid {
+		t.Fatalf("state = %v, want paid", got)
+	}
+}
+
+type failingStore struct {
+	*tsukuyomi.MemoryStore[int, status]
+
+	err error
+}
+
+func (s failingStore) CompareAndSwap(context.Context, int, status, status) (bool, error) {
+	return false, s.err
+}
+
+func TestStoreErrorSkipsHooks(t *testing.T) {
+	ctx := context.Background()
+	store := failingStore{MemoryStore: tsukuyomi.NewMemoryStore[int, status](), err: errors.New("connection reset")}
+	store.Set(1, newOrder)
+
+	hooked := false
+	m := orders().OnEnter(paid, func(context.Context, tsukuyomi.Transition[int, status]) { hooked = true })
+
+	if err := m.Transition(ctx, store, 1, paid); !errors.Is(err, store.err) {
+		t.Fatalf("got %v, want the store's error", err)
+	}
+
+	if hooked {
+		t.Fatal("OnEnter ran after a failed transition")
+	}
+}
+
+func TestMemoryStoreCompareAndSwapUnknownID(t *testing.T) {
+	store := tsukuyomi.NewMemoryStore[int, status]()
+
+	if _, err := store.CompareAndSwap(context.Background(), 1, newOrder, paid); !errors.Is(err, tsukuyomi.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
 	}
 }

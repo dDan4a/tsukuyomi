@@ -37,6 +37,7 @@ func New[ID, S comparable](db DB, t Table) *Store[ID, S] {
 	table := pgx.Identifier(strings.SplitN(t.Name, ".", 2)).Sanitize()
 	id := pgx.Identifier{t.IDColumn}.Sanitize()
 	state := pgx.Identifier{t.StateColumn}.Sanitize()
+
 	return &Store[ID, S]{
 		db:         db,
 		selectStmt: fmt.Sprintf("SELECT %s FROM %s WHERE %s = $1", state, table, id),
@@ -46,10 +47,12 @@ func New[ID, S comparable](db DB, t Table) *Store[ID, S] {
 
 func (s *Store[ID, S]) State(ctx context.Context, id ID) (S, error) {
 	var state S
+
 	err := s.db.QueryRow(ctx, s.selectStmt, id).Scan(&state)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return state, tsukuyomi.ErrNotFound
 	}
+
 	return state, err
 }
 
@@ -58,5 +61,6 @@ func (s *Store[ID, S]) CompareAndSwap(ctx context.Context, id ID, from, to S) (b
 	if err != nil {
 		return false, err
 	}
+
 	return tag.RowsAffected() == 1, nil
 }

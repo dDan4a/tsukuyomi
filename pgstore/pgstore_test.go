@@ -20,7 +20,9 @@ func TestStore(t *testing.T) {
 	if dsn == "" {
 		t.Skip("TSUKUYOMI_PG_DSN is not set")
 	}
+
 	ctx := context.Background()
+
 	conn, err := pgx.Connect(ctx, dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -44,12 +46,15 @@ func TestStore(t *testing.T) {
 	if err := m.Transition(ctx, store, 1, "paid"); err != nil {
 		t.Fatal(err)
 	}
+
 	if got, _ := store.State(ctx, 1); got != "paid" {
 		t.Fatalf("state = %v, want paid", got)
 	}
+
 	if ok, _ := store.CompareAndSwap(ctx, 1, "new", "paid"); ok {
 		t.Fatal("CAS with stale state succeeded")
 	}
+
 	if _, err := store.State(ctx, 2); !errors.Is(err, tsukuyomi.ErrNotFound) {
 		t.Fatalf("got %v, want ErrNotFound", err)
 	}
