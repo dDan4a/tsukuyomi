@@ -136,3 +136,84 @@ func TestMermaid(t *testing.T) {
 		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+func TestCan(t *testing.T) {
+	m := orders()
+
+	if !m.Can(newOrder, paid) {
+		t.Error("Can(new, paid) = false, want true")
+	}
+
+	if m.Can(paid, newOrder) {
+		t.Error("Can(paid, new) = true, want false")
+	}
+}
+
+func TestAllowTwiceKeepsOneEdge(t *testing.T) {
+	want := "stateDiagram-v2\n    new --> paid\n    new --> cancelled\n    paid --> shipped\n"
+	if got := orders().Allow(newOrder, paid).Mermaid(); got != want {
+		t.Fatalf("got:\n%s\nwant:\n%s", got, want)
+	}
+}
+
+// The guard changes the state behind the machine's back, so the compare-and-swap must fail.
+func TestConflictSkipsHooks(t *testing.T) {
+	ctx := context.Background()
+	store := tsukuyomi.NewMemoryStore[int, status]()
+	store.Set(1, newOrder)
+
+	hooked := false
+	m := orders().
+		Guard(newOrder, cancelled, func(context.Context, tsukuyomi.Transition[int, status]) error {
+			store.Set(1, paid)
+			return nil
+		}).
+		OnEnter(cancelled, func(context.Context, tsukuyomi.Transition[int, status]) { hooked = true })
+
+	if err := m.Transition(ctx, store, 1, cancelled); !errors.Is(err, tsukuyomi.ErrConflict) {
+		t.Fatalf("got %v, want ErrConflict", err)
+	}
+
+	if hooked {
+		t.Fatal("OnEnter ran after a failed transition")
+	}
+
+	if got, _ := store.State(ctx, 1); got != paid {
+		t.Fatalf("state = %v, want paid", got)
+	}
+}
+
+type failingStore struct {
+	*tsukuyomi.MemoryStore[int, status]
+
+	err error
+}
+
+func (s failingStore) CompareAndSwap(context.Context, int, status, status) (bool, error) {
+	return false, s.err
+}
+
+func TestStoreErrorSkipsHooks(t *testing.T) {
+	ctx := context.Background()
+	store := failingStore{MemoryStore: tsukuyomi.NewMemoryStore[int, status](), err: errors.New("connection reset")}
+	store.Set(1, newOrder)
+
+	hooked := false
+	m := orders().OnEnter(paid, func(context.Context, tsukuyomi.Transition[int, status]) { hooked = true })
+
+	if err := m.Transition(ctx, store, 1, paid); !errors.Is(err, store.err) {
+		t.Fatalf("got %v, want the store's error", err)
+	}
+
+	if hooked {
+		t.Fatal("OnEnter ran after a failed transition")
+	}
+}
+
+func TestMemoryStoreCompareAndSwapUnknownID(t *testing.T) {
+	store := tsukuyomi.NewMemoryStore[int, status]()
+
+	if _, err := store.CompareAndSwap(context.Background(), 1, newOrder, paid); !errors.Is(err, tsukuyomi.ErrNotFound) {
+		t.Fatalf("got %v, want ErrNotFound", err)
+	}
+}
